@@ -167,7 +167,7 @@ class DynamicAddReduceStrategy(bt.Strategy):
 
 import backtrader as bt
 import pandas as pd
-import math
+import traceback
 
 class DailyTrendSwingStrategy(bt.Strategy):
     params = dict(
@@ -871,7 +871,7 @@ class OptimizedTaStrategy(bt.Strategy):
         self.consecutive_down_days = 0  # 连续下跌天数
 
     def log(self, txt):
-        if (self.p.function == 'trend' and self.p.full_log):
+        if self.p.function == 'trend' and self.p.full_log:
             print(txt)
 
     def _is_strong_up_trend(self):
@@ -1221,18 +1221,56 @@ class OptimizedTaStrategy(bt.Strategy):
     def get_signal(self):
         return self.signal
 
+def ceboro_suggestion(df, strategy, forecast_nav, forecast_change):
+    # 构建 backtrader 数据源
+    data = bt.feeds.PandasData(dataname=df)
+
+    cerebro = bt.Cerebro()
+    cerebro.adddata(data)
+    strat = cerebro.addstrategy(strategy, function='suggestion', full_log=False)
+    try:
+        result = cerebro.run()
+        signal = result[0].get_signal()
+
+        emojis = {'加仓': '📈', '买入': '🛒', '低吸': '🤿', '减仓': '📉', '卖出': '🏷️', '无': '😐'}
+        emoji = next((e for s, e in emojis.items() if s in signal), '😐')
+
+        print(f"📊 预测净值: {forecast_nav:.4f} ({forecast_change:+.2%})")
+        print(f"{emoji} 今日操作建议: {signal or '无'}")
+        return signal
+    except Exception as e:
+        print(f"⚠️ 获取今日操作建议时出错: {e}")
+        return '错误'
+
+def ceboro_trend(df, strategy, use_plot=False):
+    data = bt.feeds.PandasData(dataname=df)
+
+    try:
+        cerebro = bt.Cerebro()
+        cerebro.adddata(data)
+        cerebro.addstrategy(strategy, function="trend", full_log=False)
+        cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days,
+                            annualize=True,
+                            riskfreerate=0.02)
+        cerebro.broker.setcash(5000.0)
+        result = cerebro.run()
+        if use_plot:
+            cerebro.plot()
+        sharpe = result[0].analyzers.sharpe.get_analysis()
+        print(f"夏普比率: {sharpe.get('sharperatio', 0):.2f}")
+    except Exception as e:
+        print(f"⚠️ 回测 {code} 基金失败: {e}")
+        traceback.print_exc()
+
 
 # === 判断当天操作的函数 ===
-def get_today_action(df, forecast_change, strategy):
+def combine_today_info(df, forecast_change):
     """输入df和预估涨跌幅（如0.005代表+0.5%），返回今日操作建议"""
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
 
     # backtrader 要求列名 close/open/high/low, 这里都用 unit_net
     df_bt = df
-    df_bt["open"] = df_bt["close"]
-    df_bt["high"] = df_bt["close"]
-    df_bt["low"] = df_bt["close"]
     df_bt["volume"] = 0
     df_bt["openinterest"] = 0
 
@@ -1244,23 +1282,8 @@ def get_today_action(df, forecast_change, strategy):
     df_today = pd.concat([df, new_row], ignore_index=True)
     df_today = df_today.set_index('date')
 
-    # 构建 backtrader 数据源
-    data = bt.feeds.PandasData(dataname=df_today)
+    return df_today, forecast_nav
 
-    cerebro = bt.Cerebro()
-    cerebro.adddata(data)
-    strat = cerebro.addstrategy(strategy,function='suggestion')
-    try:
-        result = cerebro.run()
-        signal = result[0].get_signal()
-
-        # print(f"🗓️ 日期: {forecast_date.date()}")
-        print(f"📊 预测净值: {forecast_nav:.4f} ({forecast_change:+.2%})")
-        print(f"📈 今日操作建议: {signal or '无'}")
-        return signal
-    except Exception as e:
-        print(f"⚠️ 获取今日操作建议时出错: {e}")
-        return '错误'
 
 def start_trading(code, strategy):
     from utils_efinance import get_fund_history_ef

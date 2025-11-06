@@ -134,7 +134,7 @@ def save_signals(df, output_path):
     """
     df.to_excel(output_path, index=False)
 
-def stock_trade_analysis(code, forecast_change=None, beg='20250101'):
+def stock_ta_analysis(code, forecast_change=None, beg='20250101'):
     stock_df = get_stock_history_ef(code, beg)
     df = stock_df if len(stock_df) > 10 else get_fund_history_ef(code, 300)
     df['date'] = pd.to_datetime(df['date'])
@@ -168,4 +168,4 @@ def stock_trade_analysis(code, forecast_change=None, beg='20250101'):
 
 if __name__ == "__main__":
     code = '017437'
-    stock_trade_analysis(code)
+    stock_ta_analysis(code)

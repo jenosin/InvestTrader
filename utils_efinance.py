@@ -155,10 +155,10 @@ if __name__ == "__main__":
     df.to_csv(f"{fund_code}_history.csv", index=False, encoding="utf-8-sig")
     print(f"✅ 数据已保存为 {fund_code}_history.csv")
 
-if __name__ == "__main__":
-    fund_code = "017437"
-    etf_code = "159513"
-    price = get_realtime_rate(fund_code, etf_code)
-    print(price)
+# if __name__ == "__main__":
+#     fund_code = "017437"
+#     etf_code = "159513"
+#     price = get_realtime_rate(fund_code, etf_code)
+#     print(price)
 
 

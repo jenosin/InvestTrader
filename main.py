@@ -3,28 +3,53 @@ import backtrader as bt
 import trader
 import pandas as pd
 from utils_efinance import get_fund_history_ef, get_realtime_rate
-from ta_analysis import stock_trade_analysis
+from ta_analysis import stock_ta_analysis
 import efinance as ef
 from openpyxl import load_workbook
 import traceback
 
-# ----------------- 获取历史数据和当日预估，获得操作建议 -----------------
-if __name__ == "__main__":
-
-    # use = 'fund' | 'stock' | 'backtest_fund'
-    use = 'fund'
-
-    file_path = "FundEstimate.xlsx"
-    sheet_name = "基金操作"
-
-    sheet = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl", header=1, dtype={"基金代码": str})
-    code_dict = {}
-    sheet["操作建议"] = sheet["操作建议"].astype(str)
-    sheet["追踪ETF/指数"] = sheet["追踪ETF/指数"].astype(str)
-
+def backtest_funds(file_path, sheet_name):
     # 打开 workbook
     wb = load_workbook(file_path)
     ws = wb[sheet_name]
+
+    sheet = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl", header=1, dtype={"基金代码": str})
+    sheet["操作建议"] = sheet["操作建议"].astype(str)
+    sheet["追踪ETF/指数"] = sheet["追踪ETF/指数"].astype(str)
+
+    for index, row in sheet.iterrows():
+        code = str(row["基金代码"]).strip()
+        if not code or code == "nan":
+            continue
+
+        try:
+            fund_info = ef.fund.get_base_info(code)
+            fund_name = fund_info.get("基金简称", None)
+            ws.cell(row=index + 3, column=2, value=fund_name)
+            print(f"✅ {code}: {fund_name}")
+        except Exception as e:
+            print(f"⚠️ 获取 {code} 基金信息失败: {e}")
+
+        df = get_fund_history_ef(code, 1000)
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index("date", inplace=True)
+
+        from trader import ceboro_trend
+        ceboro_trend(df, trader.OptimizedTaStrategy, False)
+
+        print('-----------------------------------------')
+
+    # 保存 Excel
+    wb.save(file_path)
+
+def suggest_funds(file_path, sheet_name):
+    # 打开 workbook
+    wb = load_workbook(file_path)
+    ws = wb[sheet_name]
+
+    sheet = pd.read_excel(file_path, sheet_name=sheet_name, engine="openpyxl", header=1, dtype={"基金代码": str})
+    sheet["操作建议"] = sheet["操作建议"].astype(str)
+    sheet["追踪ETF/指数"] = sheet["追踪ETF/指数"].astype(str)
 
     for index, row in sheet.iterrows():
         code = str(row["基金代码"]).strip()
@@ -54,39 +79,46 @@ if __name__ == "__main__":
         estimate = fund_rate or 0.0
         ws.cell(row=index + 3, column=5, value=f'{estimate/100:.2%}')
 
-        if use == 'fund':
-            df = get_fund_history_ef(code, 100)
+        df = get_fund_history_ef(code, 100)
 
-            from trader import get_today_action
-            action = get_today_action(df, estimate/100, trader.OptimizedTaStrategy)
-            ws.cell(row=index + 3, column=8, value=action)
-        elif use == 'stock':
-            action = stock_trade_analysis(code, estimate/100)
-            ws.cell(row=index + 3, column=8, value=action)
-        elif use == 'backtest_fund':
-            df = get_fund_history_ef(code, 1000)
-            df['date'] = pd.to_datetime(df['date'])
-            df.set_index("date", inplace=True)
-            data = bt.feeds.PandasData(dataname=df)
-
-            try:
-                cerebro = bt.Cerebro()
-                cerebro.adddata(data)
-                cerebro.addstrategy(trader.OptimizedTaStrategy,function="trend", full_log=False)
-                cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True,
-                                    riskfreerate=0.02)
-                cerebro.broker.setcash(5000.0)
-                result = cerebro.run()
-                # cerebro.plot()
-                sharpe = result[0].analyzers.sharpe.get_analysis()
-                print(f"夏普比率: {sharpe.get('sharperatio', 0):.2f}")
-            except Exception as e:
-                print(f"⚠️ 回测 {code} 基金失败: {e}")
-                traceback.print_exc()
-
-        print('-----------------------------------------')
-
-        # sys.exit()
+        from trader import combine_today_info, ceboro_suggestion
+        df, forecast_nav = combine_today_info(df, estimate/100)
+        action = ceboro_suggestion(df, trader.OptimizedTaStrategy, 'suggestion', forecast_nav, estimate / 100)
+        ws.cell(row=index + 3, column=8, value=action)
 
     # 保存 Excel
     wb.save(file_path)
+
+def backtest_index(index_code):
+    from utils_yfinance import get_usa_stock_yf
+    df = get_usa_stock_yf(index_code, 'current')
+
+    from trader import ceboro_trend
+    ceboro_trend(df, trader.OptimizedTaStrategy, True)
+
+def suggest_index(index_code):
+    from utils_yfinance import get_usa_stock_yf
+    from trader import ceboro_suggestion
+    df, price, estimate = get_usa_stock_yf(index_code, 'current')
+    ceboro_suggestion(df, trader.OptimizedTaStrategy, price, estimate)
+
+# ----------------- 获取历史数据和当日预估，获得操作建议 -----------------
+if __name__ == "__main__":
+
+    # use = 'funds' | 'stock' | 'backtest_fund' | 'backtest_index' | 'index'
+    use = 'backtest_index'
+    fund_code = "005918"
+    index_code = "^IXIC"
+    file_path = "FundEstimate.xlsx"
+    sheet_name = "基金操作"
+
+    if use == 'backtest_fund':
+        from trader import start_trading
+        start_trading(fund_code, trader.OptimizedTaStrategy)
+    elif use == 'backtest_funds':
+        file_path = "FundEstimate.xlsx"
+        backtest_funds(file_path, sheet_name)
+    elif use == 'funds':
+        suggest_funds(file_path, sheet_name)
+    elif use == 'backtest_index':
+        backtest_index(index_code)
