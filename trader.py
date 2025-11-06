@@ -1242,7 +1242,7 @@ def ceboro_suggestion(df, strategy, forecast_nav, forecast_change):
         print(f"⚠️ 获取今日操作建议时出错: {e}")
         return '错误'
 
-def ceboro_trend(df, strategy, use_plot=False):
+def ceboro_trend(df, strategy, use_plot, cash):
     data = bt.feeds.PandasData(dataname=df)
 
     try:
@@ -1252,7 +1252,7 @@ def ceboro_trend(df, strategy, use_plot=False):
         cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days,
                             annualize=True,
                             riskfreerate=0.02)
-        cerebro.broker.setcash(5000.0)
+        cerebro.broker.setcash(cash)
         result = cerebro.run()
         if use_plot:
             cerebro.plot()
@@ -1266,30 +1266,24 @@ def ceboro_trend(df, strategy, use_plot=False):
 # === 判断当天操作的函数 ===
 def combine_today_info(df, forecast_change):
     """输入df和预估涨跌幅（如0.005代表+0.5%），返回今日操作建议"""
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date')
-
-    # backtrader 要求列名 close/open/high/low, 这里都用 unit_net
     df_bt = df
     df_bt["volume"] = 0
     df_bt["openinterest"] = 0
 
     last_nav = df['close'].iloc[-1]
     forecast_nav = last_nav * (1 + forecast_change)
-    forecast_date = df['date'].iloc[-1] + pd.Timedelta(days=1)
+    forecast_date = df_bt.index[-1] + pd.Timedelta(days=1)
 
-    new_row = pd.DataFrame({'date': [forecast_date], 'close': [forecast_nav], 'open': [forecast_nav], 'high': [forecast_nav], 'low': [forecast_nav]})
-    df_today = pd.concat([df, new_row], ignore_index=True)
-    df_today = df_today.set_index('date')
+    new_row = pd.DataFrame({'date': [forecast_date], 'close': [forecast_nav], 'open': [forecast_nav], 'high': [forecast_nav], 'low': [forecast_nav]}, index=forecast_date)
+    df_today = pd.concat([df, new_row])
 
     return df_today, forecast_nav
 
 
-def start_trading(code, strategy):
+def start_trading(code, strategy, cash):
     from utils_efinance import get_fund_history_ef
     df = get_fund_history_ef(code, 1000)
-    df['date'] = pd.to_datetime(df['date'])
-    df.set_index("date", inplace=True)
+
     data = bt.feeds.PandasData(dataname=df)
 
     cerebro = bt.Cerebro()
@@ -1297,7 +1291,7 @@ def start_trading(code, strategy):
     cerebro.addstrategy(strategy, function="trend", full_log=True)
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days, annualize=True,
                         riskfreerate=0.02)
-    cerebro.broker.setcash(5000.0)
+    cerebro.broker.setcash(cash)
     result = cerebro.run()
     cerebro.plot()
     sharpe = result[0].analyzers.sharpe.get_analysis()

@@ -84,6 +84,8 @@ def get_fund_history_ef(fund_code: str, items=1000):
     fund_df['high'] = fund_df['close']
     fund_df['low'] = fund_df['close']
     fund_df['volume'] = 0
+    fund_df['date'] = pd.to_datetime(fund_df['date'])
+    fund_df.set_index("date", inplace=True)
     return fund_df
 
 def get_stock_history_ef(stock_code: str, beg):
