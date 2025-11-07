@@ -1259,7 +1259,7 @@ def ceboro_trend(df, strategy, use_plot, cash):
         sharpe = result[0].analyzers.sharpe.get_analysis()
         print(f"夏普比率: {sharpe.get('sharperatio', 0):.2f}")
     except Exception as e:
-        print(f"⚠️ 回测 {code} 基金失败: {e}")
+        print(f"⚠️ 回测基金失败: {e}")
         traceback.print_exc()
 
 

@@ -128,7 +128,7 @@ if __name__ == "__main__":
         if df is None or not len(df):
             print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
             sys.exit()
-        ceboro_trend(df, trader.OptimizedTaStrategy, True, cash)
+        ceboro_trend(df, trader.OptimizedTaStrategy, False, cash)
 
     elif use == 'backtest_funds':
         file_path = "FundEstimate.xlsx"
@@ -147,13 +147,13 @@ if __name__ == "__main__":
     elif use == 'fund':
         fund_code = input("请输入基金代码：")
         try:
-            estimate = int(input("请输入基金预估净值："))
+            estimate = float(input("请输入基金预估涨跌幅（%）："))
         except Exception as e:
             print(f"⚠️ 输入的基金预估净值有误: {e}")
             sys.exit()
         print(f"开始获取 {fund_code} 基金操作建议")
         df = get_fund_history_ef(fund_code, 100)
-        if not df or not len(df):
+        if df is None or not len(df):
             print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
             sys.exit()
         df, forecast_nav = combine_today_info(df, estimate)
