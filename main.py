@@ -78,6 +78,8 @@ def suggest_funds(file_path, sheet_name):
         action = ceboro_suggestion(df, trader.OptimizedTaStrategy, forecast_nav, estimate / 100)
         ws.cell(row=index + 3, column=8, value=action)
 
+        print('-----------------------------------------')
+
     # 保存 Excel
     wb.save(file_path)
 
@@ -121,6 +123,7 @@ if __name__ == "__main__":
 
     if use == 'backtest_fund':
         fund_code = input("请输入基金代码：")
+        print(f"开始回测 {fund_code} 基金")
         df = get_fund_history_ef(fund_code, 300)
         if df is None or not len(df):
             print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
@@ -129,13 +132,16 @@ if __name__ == "__main__":
 
     elif use == 'backtest_funds':
         file_path = "FundEstimate.xlsx"
+        print(f"开始回测 {file_path} 文件所有基金")
         backtest_funds(file_path, sheet_name, cash)
 
     elif use == 'funds':
+        print(f"开始获取 {file_path} 文件所有基金操作建议")
         suggest_funds(file_path, sheet_name)
 
     elif use == 'backtest_index':
         index_code = input("请输入指数代码：")
+        print(f"开始回测 {index_code} 指数")
         backtest_index(index_code, cash)
 
     elif use == 'fund':
@@ -145,6 +151,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️ 输入的基金预估净值有误: {e}")
             sys.exit()
+        print(f"开始获取 {fund_code} 基金操作建议")
         df = get_fund_history_ef(fund_code, 100)
         if not df or not len(df):
             print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
@@ -154,4 +161,5 @@ if __name__ == "__main__":
 
     elif use == 'index':
         index_code = input("⌨️ 请输入指数代码：")
+        print(f"开始获取 {index_code} 指数操作建议")
         suggest_index(index_code)
