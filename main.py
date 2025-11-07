@@ -52,6 +52,10 @@ def suggest_funds(file_path, sheet_name):
 
         etf_code = row["追踪ETF/指数"] if not pd.isna(row["追踪ETF/指数"]) else ""
 
+        etf_info = ef.stock.get_base_info(etf_code)
+        etf_name = etf_info.get("股票名称", None)
+        volume_source = etf_code if 'ETF' in etf_name else ""
+
         try:
             fund_info = ef.fund.get_base_info(code)
             fund_name = fund_info.get("基金简称", None)
@@ -73,7 +77,7 @@ def suggest_funds(file_path, sheet_name):
         estimate = fund_rate or 0.0
         ws.cell(row=index + 3, column=5, value=f'{estimate/100:.2%}')
 
-        df = get_fund_history_ef(code, 100)
+        df = get_fund_history_ef(code, 100, volume_source)
         df, forecast_nav = combine_today_info(df, estimate/100)
         action = ceboro_suggestion(df, trader.OptimizedTaStrategy, forecast_nav, estimate / 100)
         ws.cell(row=index + 3, column=8, value=action)
@@ -110,7 +114,7 @@ if __name__ == "__main__":
     
 🔢 输入选项数字（1-6）：""")
 
-    uses = ['backtest_fund', 'backtest_funds', 'fund', 'funds', 'backtest_index', 'index']
+    uses = ['backtest_fund', 'backtest_funds', 'suggest_fund', 'suggest_funds', 'backtest_index', 'suggest_index']
     use = uses[int(use_input) - 1]
 
     # use = 'backtest_fund'
@@ -123,8 +127,9 @@ if __name__ == "__main__":
 
     if use == 'backtest_fund':
         fund_code = input("请输入基金代码：")
+        etf_code = input("请输入基金追踪的ETF/指数代码：")
         print(f"开始回测 {fund_code} 基金")
-        df = get_fund_history_ef(fund_code, 300)
+        df = get_fund_history_ef(fund_code, 300, etf_code)
         if df is None or not len(df):
             print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
             sys.exit()
@@ -135,7 +140,7 @@ if __name__ == "__main__":
         print(f"开始回测 {file_path} 文件所有基金")
         backtest_funds(file_path, sheet_name, cash)
 
-    elif use == 'funds':
+    elif use == 'suggest_funds':
         print(f"开始获取 {file_path} 文件所有基金操作建议")
         suggest_funds(file_path, sheet_name)
 
@@ -144,15 +149,16 @@ if __name__ == "__main__":
         print(f"开始回测 {index_code} 指数")
         backtest_index(index_code, cash)
 
-    elif use == 'fund':
+    elif use == 'suggest_fund':
         fund_code = input("请输入基金代码：")
         try:
             estimate = float(input("请输入基金预估涨跌幅（%）："))
+            etf_code = input("请输入基金追踪的ETF/指数代码：")
         except Exception as e:
             print(f"⚠️ 输入的基金预估净值有误: {e}")
             sys.exit()
         print(f"开始获取 {fund_code} 基金操作建议")
-        df = get_fund_history_ef(fund_code, 100)
+        df = get_fund_history_ef(fund_code, 100, etf_code)
         if df is None or not len(df):
             print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
             sys.exit()

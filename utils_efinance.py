@@ -70,11 +70,26 @@ def get_fund_history(fund_code: str, pages=0):
     df = df.sort_values("date").reset_index(drop=True)
     return df
 
-def get_fund_history_ef(fund_code: str, items=1000):
+def get_fund_history_ef(fund_code: str, items=1000, etf_code=''):
     """
-    从 efinance 抓取指定基金的历史净值数据
-    fund_code: 基金代码，如 '005918'
+    从 efinance 抓取指定基金的历史净值数据，
+    若提供 etf_code，则合并其成交量数据。
+
+    参数：
+    ----------
+    fund_code : str
+        基金代码，例如 '005918'
+    items : int
+        历史条数
+    etf_code : str, optional
+        跟踪的ETF代码，例如 '159915'
+
+    返回：
+    ----------
+    fund_df : pd.DataFrame
+        含日期索引的基金数据，附加成交量列
     """
+    # ===== 1️⃣ 获取基金净值 =====
     fund_df = ef.fund.get_quote_history(fund_code, items)
     fund_df = fund_df.sort_values('日期').reset_index(drop=True)
     fund_df.rename(
@@ -86,6 +101,20 @@ def get_fund_history_ef(fund_code: str, items=1000):
     fund_df['volume'] = 0
     fund_df['date'] = pd.to_datetime(fund_df['date'])
     fund_df.set_index("date", inplace=True)
+
+    # ===== 2️⃣ 若提供ETF代码，则合并成交量 =====
+    if etf_code:
+        etf_df = ef.stock.get_quote_history(etf_code, beg="20200101")
+        etf_df.rename(columns={'日期': 'date', '成交量': 'volume'}, inplace=True)
+        etf_df['date'] = pd.to_datetime(etf_df['date'])
+        etf_df = etf_df[['date', 'volume']].set_index('date')
+        etf_df['volume'] = etf_df['volume'].fillna(0)
+
+        # 合并成交量（按日期对齐，基金日期为主）
+        fund_df = fund_df.merge(etf_df, how='left', left_index=True, right_index=True, suffixes=('', '_etf'))
+        fund_df['volume'] = fund_df['volume_etf'].fillna(0).astype(int)
+        fund_df.drop(columns=['volume_etf'], inplace=True)
+
     return fund_df
 
 def get_stock_history_ef(stock_code: str, beg):

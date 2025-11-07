@@ -813,6 +813,8 @@ class OptimizedTaStrategy(bt.Strategy):
         self.low = self.datas[0].low
         self.high = self.datas[0].high
         self.open = self.datas[0].open
+        self.volume = self.datas[0].volume
+        self.vol_ratio = 0.0
 
         # 多周期均线系统
         self.ma_short = bt.ind.SMA(self.datas[0], period=5)
@@ -852,6 +854,9 @@ class OptimizedTaStrategy(bt.Strategy):
         # 价格行为指标
         self.price_change = self.data.close - self.data.close(-1)  # 日变化
         self.volatility = bt.indicators.StandardDeviation(self.data.close, period=10)  # 波动率
+
+        # 成交量相关指标
+        self.vol_sma = bt.indicators.SMA(self.data.volume, period=20)  # 成交量20日均线
 
         self.signal = None
 
@@ -982,6 +987,54 @@ class OptimizedTaStrategy(bt.Strategy):
 
         return rsi_oversold or kdj_oversold or price_at_bottom_bb
 
+    def _is_volume_breakout(self):
+        """
+        判断是否有放量突破
+        """
+        # 成交量是近期平均的2倍以上
+        high_volume = self.vol_ratio > 2.0
+
+        # 同时价格上涨
+        price_increase = self.close[0] > self.close[-1]
+
+        return high_volume and price_increase
+
+    def _is_volume_shrink(self):
+        """
+        判断是否缩量
+        """
+        # 成交量低于平均值的50%
+        low_volume = 0.0 < self.vol_ratio < 0.5
+        return low_volume
+
+    def _is_bullish_volume_divergence(self):
+        """
+        判断是否存在看涨的量价背离
+        价格创新低但成交量放大
+        """
+        # 价格创近期新低
+        recent_low_price = min([self.close[-i] for i in range(1, 6)])
+        price_new_low = self.close[0] < recent_low_price
+
+        # 但成交量放大
+        volume_increase = self.vol_ratio > 1.5
+
+        return price_new_low and volume_increase
+
+    def _is_bearish_volume_divergence(self):
+        """
+        判断是否存在看跌的量价背离
+        价格创新高但成交量萎缩
+        """
+        # 价格创近期新高
+        recent_high_price = max([self.close[-i] for i in range(1, 6)])
+        price_new_high = self.close[0] > recent_high_price
+
+        # 但成交量萎缩
+        volume_shrink = 0.0 < self.vol_ratio < 0.7
+
+        return price_new_high and volume_shrink
+
     def _calculate_position_size(self, target_exposure_ratio=0.1):
         """
         根据账户总价值计算目标仓位大小
@@ -1041,6 +1094,9 @@ class OptimizedTaStrategy(bt.Strategy):
     def next(self):
         nav = float(self.close[0])
         date = self.datas[0].datetime.date(0)
+        vol = self.data.volume[0]
+        sma = self.vol_sma[0]
+        self.vol_ratio = vol / sma if sma > 0 else 0.0
 
         # 初始建仓
         if self.start_nav is None and self.p.function == 'trend':
@@ -1083,9 +1139,18 @@ class OptimizedTaStrategy(bt.Strategy):
         overbought = self._is_overbought()
         oversold = self._is_oversold()
 
+        # 成交量相关判断
+        volume_breakout = self._is_volume_breakout()
+        volume_shrink = self._is_volume_shrink()
+        bullish_divergence = self._is_bullish_volume_divergence()
+        bearish_divergence = self._is_bearish_volume_divergence()
+
         self.log(f"趋势: 强上升={strong_up_trend}, 弱上升={weak_up_trend}, "
                  f"强下跌={strong_down_trend}, 弱下跌={weak_down_trend}, "
                  f"震荡={consolidation}")
+
+        self.log(f"成交量: 放量={volume_breakout}, 缩量={volume_shrink}, "
+                 f"看涨背离={bullish_divergence}, 看跌背离={bearish_divergence}")
 
         # ========== 策略主逻辑 ==========
 
@@ -1094,6 +1159,10 @@ class OptimizedTaStrategy(bt.Strategy):
             # 根据趋势强度调整加仓比例
             trend_strength = min(1.0, self.adx[0] / 50.0)  # 归一化AD值到0-1
             add_ratio = 2 * (1.0 + trend_strength)  # 1.0-2.0倍基础金额
+
+            # 如果伴随放量突破，进一步增加仓位
+            if volume_breakout:
+                add_ratio *= 1.2
 
             amt = min(self.p.daily_amount * add_ratio, cash_avail)
             if amt > 0 and self.p.function == 'trend':
@@ -1106,7 +1175,11 @@ class OptimizedTaStrategy(bt.Strategy):
         # 2. 强势上升但超买的情况 - 适度加仓
         elif strong_up_trend and overbought:
             # 在强势上升趋势中，即使超买也可以适度加仓
-            amt = min(self.p.daily_amount * 0.5, cash_avail)  # 减少加仓比例
+
+            # 但如果出现看跌背离，则减少加仓
+            multiplier = 0.5 if bearish_divergence else 1.0
+
+            amt = min(self.p.daily_amount * 0.5 * multiplier, cash_avail)  # 减少加仓比例
             if amt > 0 and self.p.function == 'trend':
                 size = amt / nav
                 self.buy(size=size)
@@ -1116,7 +1189,9 @@ class OptimizedTaStrategy(bt.Strategy):
 
         # 3. 弱势上升趋势 - 稳健加仓
         elif weak_up_trend and not overbought:
-            amt = min(self.p.daily_amount, cash_avail)
+            # 如果出现看涨背离，增加信心
+            multiplier = 1.5 if bullish_divergence else 1.0
+            amt = min(self.p.daily_amount * multiplier, cash_avail)
             if amt > 0 and self.p.function == 'trend':
                 size = amt / nav
                 self.buy(size=size)
@@ -1126,7 +1201,9 @@ class OptimizedTaStrategy(bt.Strategy):
 
         # 4. 回调买入机会 - 在上升趋势中的超卖位置
         elif (strong_up_trend or weak_up_trend) and oversold:
-            extra = min(self.p.daily_amount * self.p.add_on_pullback_ratio, cash_avail)
+            # 如果缩量回调，更加确认回调性质
+            extra_multiplier = 1.2 if volume_shrink else 1.0
+            extra = min(self.p.daily_amount * self.p.add_on_pullback_ratio * extra_multiplier, cash_avail)
             if extra > 0 and cash_avail > 0 and self.p.function == 'trend':
                 size = extra / nav
                 self.buy(size=size)
@@ -1138,7 +1215,9 @@ class OptimizedTaStrategy(bt.Strategy):
         elif consolidation:
             # 低位买入
             if (nav <= bb_bot or oversold) and not (strong_down_trend or weak_down_trend):
-                amt = min(self.p.daily_amount, cash_avail)  # 减少投入
+                # 如果出现看涨背离，增加买入力度
+                amt_multiplier = 1.5 if bullish_divergence else 1.0
+                amt = min(self.p.daily_amount * amt_multiplier, cash_avail)  # 减少投入
                 if amt > 0 and self.p.function == 'trend':
                     size = amt / nav
                     self.buy(size=size)
@@ -1148,8 +1227,10 @@ class OptimizedTaStrategy(bt.Strategy):
 
             # 高位卖出
             elif  (nav >= bb_top or overbought) and not (strong_up_trend or weak_up_trend):
+                # 如果出现看跌背离或放量滞涨，增加卖出力度
+                sell_multiplier = 1.5 if (bearish_divergence or volume_shrink) else 1.0
                 if pos.size > 0 and self.p.function == 'trend':
-                    size_to_sell = pos.size * self.p.sell_fraction_on_high
+                    size_to_sell = pos.size * self.p.sell_fraction_on_high * sell_multiplier
                     if size_to_sell > 0:
                         self.sell(size=size_to_sell)
                         self.log(f"{date} 震荡市高位减持 {size_to_sell:.4f} 份 @ {nav:.4f}")
@@ -1162,6 +1243,9 @@ class OptimizedTaStrategy(bt.Strategy):
             min_allowed = self.max_hold_shares * self.p.bottom_ratio
             can_reduce = max(0.0, pos.size - min_allowed)
             reduce_step = self.p.reduce_step * 3 if overbought else self.p.reduce_step * 2
+            # 如果出现放量下跌，进一步增加减仓力度
+            if volume_breakout:
+                reduce_step *= 1.5
             reduce_ratio = min(1.0, reduce_step)
             size_to_sell = min(pos.size * reduce_ratio, can_reduce)
             if pos.size > 0 and self.p.function == 'trend' and can_reduce > 0:
@@ -1174,11 +1258,13 @@ class OptimizedTaStrategy(bt.Strategy):
 
         # 7. 弱势下降趋势 - 缓慢减仓
         elif weak_down_trend:
+            # 如果出现看涨背离，减缓减仓速度
+            reduce_multiplier = 0.5 if bullish_divergence else 1.0
             if pos.size > 0 and self.p.function == 'trend':
                 min_allowed = self.max_hold_shares * self.p.bottom_ratio
                 can_reduce = max(0.0, pos.size - min_allowed)
                 if can_reduce > 0:
-                    size_to_sell = min(pos.size * self.p.reduce_step, can_reduce)
+                    size_to_sell = min(pos.size * self.p.reduce_step * reduce_multiplier, can_reduce)
                     if size_to_sell > 0:
                         self.sell(size=size_to_sell)
                         self.log(
