@@ -36,7 +36,7 @@ def backtest_funds(file_path, sheet_name, cash):
     # 保存 Excel
     wb.save(file_path)
 
-def suggest_funds(file_path, sheet_name, cash):
+def suggest_funds(file_path, sheet_name):
     # 打开 workbook
     wb = load_workbook(file_path)
     ws = wb[sheet_name]
@@ -132,7 +132,7 @@ if __name__ == "__main__":
         backtest_funds(file_path, sheet_name, cash)
 
     elif use == 'funds':
-        suggest_funds(file_path, sheet_name,cash)
+        suggest_funds(file_path, sheet_name)
 
     elif use == 'backtest_index':
         index_code = input("请输入指数代码：")

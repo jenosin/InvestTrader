@@ -1274,7 +1274,7 @@ def combine_today_info(df, forecast_change):
     forecast_nav = last_nav * (1 + forecast_change)
     forecast_date = df_bt.index[-1] + pd.Timedelta(days=1)
 
-    new_row = pd.DataFrame({'date': [forecast_date], 'close': [forecast_nav], 'open': [forecast_nav], 'high': [forecast_nav], 'low': [forecast_nav]}, index=forecast_date)
+    new_row = pd.DataFrame({'close': [forecast_nav], 'open': [forecast_nav], 'high': [forecast_nav], 'low': [forecast_nav]}, index=[forecast_date])
     df_today = pd.concat([df, new_row])
 
     return df_today, forecast_nav
