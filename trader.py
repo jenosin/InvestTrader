@@ -859,6 +859,7 @@ class OptimizedTaStrategy(bt.Strategy):
         self.vol_sma = bt.indicators.SMA(self.data.volume, period=20)  # 成交量20日均线
 
         self.signal = None
+        self.indicators = None
 
         # 持仓管理
         self.hold_shares = 0.0
@@ -1097,6 +1098,7 @@ class OptimizedTaStrategy(bt.Strategy):
         vol = self.data.volume[0]
         sma = self.vol_sma[0]
         self.vol_ratio = vol / sma if sma > 0 else 0.0
+        self.signal = '无'
 
         # 初始建仓
         if self.start_nav is None and self.p.function == 'trend':
@@ -1144,13 +1146,6 @@ class OptimizedTaStrategy(bt.Strategy):
         volume_shrink = self._is_volume_shrink()
         bullish_divergence = self._is_bullish_volume_divergence()
         bearish_divergence = self._is_bearish_volume_divergence()
-
-        self.log(f"趋势: 强上升={strong_up_trend}, 弱上升={weak_up_trend}, "
-                 f"强下跌={strong_down_trend}, 弱下跌={weak_down_trend}, "
-                 f"震荡={consolidation}")
-
-        self.log(f"成交量: 放量={volume_breakout}, 缩量={volume_shrink}, "
-                 f"看涨背离={bullish_divergence}, 看跌背离={bearish_divergence}")
 
         # ========== 策略主逻辑 ==========
 
@@ -1226,7 +1221,7 @@ class OptimizedTaStrategy(bt.Strategy):
                     self.signal = f"震荡市，建议低位吸纳 {amt:.2f}"
 
             # 高位卖出
-            elif  (nav >= bb_top or overbought) and not (strong_up_trend or weak_up_trend):
+            elif (nav >= bb_top or overbought) and not (strong_up_trend or weak_up_trend):
                 # 如果出现看跌背离或放量滞涨，增加卖出力度
                 sell_multiplier = 1.5 if (bearish_divergence or volume_shrink) else 1.0
                 if pos.size > 0 and self.p.function == 'trend':
@@ -1304,10 +1299,57 @@ class OptimizedTaStrategy(bt.Strategy):
                 print(f"仅仓位收益率 (hold ROI): {hold_roi:.2%}")
             print(f"总资金 (broker): {self.broker.getvalue():.2f}")
 
+        ma = f'MA5={self.ma_short[0]:.4f}, MA10={self.ma_mid[0]:.4f}, MA20={self.ma_long[0]:.4f}'
+        price = f'CLOSE={self.close[0]:.4f}'
+        adx = f'ADX={self.adx[0]:.4f}'
+        momentum = f'MOM={self.momentum[0]:.4f}'
+        rsi = f'RSI={self.rsi[0]:.4f}'
+        kdj = f'KDJ={self.kdj_j[0]:.4f}'
+        bb = f'BOLL: {self.bbands.lines.mid[0]:.4f}/{self.bbands.lines.top[0]:.4f}/{self.bbands.lines.bot[0]:.4f}'
+        trend_indicators = f'{ma}，{price}，{adx}，{momentum}\n趋势：'
+        trend = ''
+
+        if self._is_strong_up_trend():
+            trend += '强势上升；'
+        if self._is_weak_up_trend():
+            trend += '弱势上升；'
+        if self._is_consolidation():
+            trend += '盘整；'
+        if self._is_strong_down_trend():
+            trend += '强势下降；'
+        if self._is_weak_down_trend():
+            trend += '弱势下降；'
+
+        trend = f'{trend_indicators}无' if trend == '' else f'{trend_indicators}{trend[:-1]}'
+
+        if self._is_oversold():
+            over = f'{rsi}，{kdj}，{bb}，状态: 超卖'
+        elif self._is_overbought():
+            over = f'{rsi}，{kdj}，{bb}，状态: 超买'
+        else:
+            over = f'{rsi}，{kdj}，{bb}，状态: 正常'
+
+        if self._is_volume_breakout():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 放量'
+        elif self._is_volume_shrink():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 缩量'
+        elif self._is_bullish_volume_divergence():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 看涨量价背离'
+        elif self._is_bearish_volume_divergence():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 看跌量价背离'
+        else:
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 正常'
+
+        self.indicators = f'{trend}\n{over}\n{volume}'
+
+
     def get_signal(self):
         return self.signal
 
-def ceboro_suggestion(df, strategy, forecast_nav, forecast_change):
+    def get_indicators(self):
+        return self.indicators
+
+def ceboro_suggestion(df, strategy, forecast_nav, forecast_change, indicators=False):
     # 构建 backtrader 数据源
     data = bt.feeds.PandasData(dataname=df)
 
@@ -1323,6 +1365,10 @@ def ceboro_suggestion(df, strategy, forecast_nav, forecast_change):
 
         print(f"📊 预测净值: {forecast_nav:.4f} ({forecast_change:+.2%})")
         print(f"{emoji} 今日操作建议: {signal or '无'}")
+
+        if indicators:
+            indicators = result[0].get_indicators()
+            print(indicators)
         return signal
     except Exception as e:
         print(f"⚠️ 获取今日操作建议时出错: {e}")
