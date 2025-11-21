@@ -1259,12 +1259,14 @@ class OptimizedTaStrategy(bt.Strategy):
             # 建仓条件：在震荡市中出现好的买入点
             elif self.start_nav is None and self._is_good_entry_point():
                 amt = min(self.p.initial_amount, self._cash_available())
-                if amt > 0:
+                if amt > 0 and self.p.function == 'trend':
                     size = amt / nav
                     self.buy(size=size)
                     self.start_nav = nav
                     self.start_value = self.broker.getvalue()
                     self.log(f"{date} 震荡市中发现建仓机会，投资 {amt:.2f}")
+                elif self.p.function == 'suggestion':
+                    self.signal = f"震荡市，发现建仓机会 {amt:.2f}"
 
         # 6. 强势下降趋势 - 快速减仓
         elif strong_down_trend:
