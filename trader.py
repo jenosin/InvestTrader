@@ -1036,6 +1036,25 @@ class OptimizedTaStrategy(bt.Strategy):
 
         return price_new_high and volume_shrink
 
+    def _is_good_entry_point(self):
+        """
+            判断是否为良好的建仓时机
+            """
+        # 条件1: 处于超卖状态
+        is_oversold = self._is_oversold()
+
+        # 条件2: 动量指标开始转正
+        momentum_improving = self.momentum[0] > self.momentum[-1] and self.momentum[0] > 0
+
+        # 条件3: 价格在布林下轨附近
+        near_bottom = self.close[0] <= self.bbands.lines.bot[0] * 1.02
+
+        # 条件4: 成交量放大（有资金流入迹象）
+        volume_support = self.vol_ratio > 1.0
+
+        # 综合判断
+        return is_oversold and (momentum_improving or near_bottom) and volume_support
+
     def _calculate_position_size(self, target_exposure_ratio=0.1):
         """
         根据账户总价值计算目标仓位大小
@@ -1102,14 +1121,19 @@ class OptimizedTaStrategy(bt.Strategy):
 
         # 初始建仓
         if self.start_nav is None and self.p.function == 'trend':
-            amt = min(self.p.initial_amount, self._cash_available())
-            if amt > 0:
-                size = amt / nav
-                self.order = self.buy(size=size)
-            self.start_nav = nav
-            self.start_value = self.broker.getvalue()
-            self.log(f"{date} 开始：NAV={nav:.4f}, 计划初始投 {amt:.2f}")
-            return
+            # 如果满足建仓条件或者策略运行了一段时间仍未能建仓
+            if self._is_good_entry_point() or len(self) > 5:
+                amt = min(self.p.initial_amount, self._cash_available())
+                if amt > 0:
+                    size = amt / nav
+                    self.order = self.buy(size=size)
+                self.start_nav = nav
+                self.start_value = self.broker.getvalue()
+                self.log(f"{date} 开始建仓：NAV={nav:.4f}, 投资 {amt:.2f}")
+                return
+            else:
+                self.log(f"{date} 等待合适建仓时机：NAV={nav:.4f}")
+                return
 
         # 更新连续涨跌天数
         if self.close[0] > self.close[-1]:
@@ -1231,6 +1255,16 @@ class OptimizedTaStrategy(bt.Strategy):
                         self.log(f"{date} 震荡市高位减持 {size_to_sell:.4f} 份 @ {nav:.4f}")
                 elif self.p.function == 'suggestion':
                     self.signal = f"震荡市，建议高位减持 {self.p.sell_fraction_on_high:.2%} 仓位"
+
+            # 建仓条件：在震荡市中出现好的买入点
+            elif self.start_nav is None and self._is_good_entry_point():
+                amt = min(self.p.initial_amount, self._cash_available())
+                if amt > 0:
+                    size = amt / nav
+                    self.buy(size=size)
+                    self.start_nav = nav
+                    self.start_value = self.broker.getvalue()
+                    self.log(f"{date} 震荡市中发现建仓机会，投资 {amt:.2f}")
 
         # 6. 强势下降趋势 - 快速减仓
         elif strong_down_trend:
