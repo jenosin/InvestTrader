@@ -125,23 +125,20 @@ if __name__ == "__main__":
         uses = ['backtest_fund', 'backtest_funds', 'suggest_fund', 'suggest_funds', 'backtest_index', 'suggest_index', 'exit']
         use = uses[int(use_input) - 1]
 
-        # use = 'backtest_fund'
-        # fund_code = "017436"
-        # index_code = "^IXIC"
-
         file_path = "FundEstimate.xlsx"
         sheet_name = "基金操作"
         cash = 5000
 
         if use == 'backtest_fund':
             fund_code = input("请输入基金代码：")
-            etf_code = input("请输入基金追踪的ETF/指数代码：")
+            etf_code = input("请输入基金追踪的ETF/指数代码（可留空）：")
+            full_log = input("是否输出50条日志并绘图（Y/N）：")
             print(f"开始回测 {fund_code} 基金")
             df = get_fund_history_ef(fund_code, 300, etf_code)
             if df is None or not len(df):
                 print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
                 sys.exit()
-            ceboro_trend(df, trader.OptimizedTaStrategy, False, cash)
+            ceboro_trend(df, trader.OptimizedTaStrategy, full_log == 'Y', cash, full_log == 'Y')
 
         elif use == 'backtest_funds':
             file_path = "FundEstimate.xlsx"

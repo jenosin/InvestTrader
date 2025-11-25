@@ -1,4 +1,5 @@
 import backtrader as bt
+import numpy as np
 
 class DynamicAddReduceStrategy(bt.Strategy):
     """
@@ -847,6 +848,8 @@ class OptimizedTaStrategy(bt.Strategy):
 
         # ADX 增强趋势强度判断
         self.adx = bt.indicators.ADX(self.data, period=14)
+        self.di_plus = bt.ind.PlusDI(period=14)
+        self.di_minus = bt.ind.MinusDI(period=14)
 
         # 动量指标
         self.momentum = bt.indicators.Momentum(self.data.close, period=10)
@@ -877,7 +880,7 @@ class OptimizedTaStrategy(bt.Strategy):
         self.consecutive_down_days = 0  # 连续下跌天数
 
     def log(self, txt):
-        if self.p.function == 'trend' and self.p.full_log:
+        if self.p.function == 'trend' and self.p.full_log and len(self) > 250:
             print(txt)
 
     def _is_strong_up_trend(self):
@@ -967,6 +970,43 @@ class OptimizedTaStrategy(bt.Strategy):
         low_volatility = self.volatility[0] < avg_volatility * 0.8
 
         return low_adx or narrow_bands or low_volatility
+
+    def _is_consolidation_new(self):
+        """更专业、更稳定的震荡判定"""
+
+        close = self.close[0]
+
+        # --- 1. 趋势强度弱 ---
+        low_adx = self.adx[0] < 22
+        di_diff_small = abs(self.di_plus[0] - self.di_minus[0]) < 5
+        weak_trend = low_adx or di_diff_small
+
+        # --- 2. 均线纠缠（距离 + 斜率）---
+        ma5, ma10, ma20 = self.ma_short[0], self.ma_mid[0], self.ma_long[0]
+
+        ma_distance_small = (
+                abs(ma5 - ma10) / close < 0.01 and
+                abs(ma10 - ma20) / close < 0.01
+        )
+
+        # slope = today_ma20 - yesterday_ma20
+        ma20_slope = abs(self.ma_long[0] - self.ma_long[-1]) / close
+        slope_flat = ma20_slope < 0.003
+
+        ma_converged = ma_distance_small and slope_flat
+
+        # --- 3. 价格在区间（布林带）---
+        mid = self.bbands.lines.mid[0]
+        up = self.bbands.lines.top[0]
+
+        price_in_middle_band = (close > mid - (up - mid) / 2) and (close < mid + (up - mid) / 2)
+
+        # --- 4. 波动率稳定（可选）---
+        vol_window = [self.volatility[-i] for i in range(10)]
+        vol_stable = np.std(vol_window) < np.mean(vol_window) * 0.8
+
+        # --- 最终判断 ---
+        return weak_trend and ma_converged and price_in_middle_band
 
     def _is_overbought(self):
         """
@@ -1161,6 +1201,7 @@ class OptimizedTaStrategy(bt.Strategy):
         weak_up_trend = self._is_weak_up_trend()
         strong_down_trend = self._is_strong_down_trend()
         weak_down_trend = self._is_weak_down_trend()
+        # consolidation = self._is_consolidation()
         consolidation = self._is_consolidation()
         overbought = self._is_overbought()
         oversold = self._is_oversold()
@@ -1385,6 +1426,511 @@ class OptimizedTaStrategy(bt.Strategy):
     def get_indicators(self):
         return self.indicators
 
+class TrendScore(bt.Indicator):
+    lines = ('score', 'trend')
+    params = dict(
+        period_ema_short=5,
+        period_ema_mid=20,
+        period_ema_long=60,
+        period_rsi=14,
+        period_momentum=10,
+        period_kdj=9,
+        period_adx=14,
+        period_boll=20,
+    )
+
+    def __init__(self):
+        # ===== EMA =====
+        ema5 = bt.ind.EMA(period=self.p.period_ema_short)
+        ema20 = bt.ind.EMA(period=self.p.period_ema_mid)
+        ema60 = bt.ind.EMA(period=self.p.period_ema_long)
+
+        self.ema5 = ema5
+        self.ema20 = ema20
+        self.ema60 = ema60
+
+        # ===== MACD =====
+        macd = bt.ind.MACD()
+        self.macd = macd.macd
+        self.macdsig = macd.signal
+
+        # 金叉死叉（今日>昨日 + MACD与Signal交叉）
+        self.macd_cross = bt.ind.CrossOver(self.macd, self.macdsig)
+
+        # ===== KDJ =====
+        k = bt.ind.Stochastic(period=self.p.period_kdj)
+        self.k = k.percK
+        self.d = k.percD
+        self.kdj_cross = bt.ind.CrossOver(self.k, self.d)
+
+        # ===== ADX =====
+        self.adx = bt.ind.ADX(period=self.p.period_adx)
+        self.diplus = bt.ind.PlusDI(period=self.p.period_adx)
+        self.diminus = bt.ind.MinusDI(period=self.p.period_adx)
+
+        # ===== Momentum =====
+        self.momentum = bt.ind.Momentum(period=self.p.period_momentum)
+
+        # ===== RSI =====
+        self.rsi = bt.ind.RSI(period=self.p.period_rsi)
+
+        # ===== Bollinger Bands =====
+        self.boll = bt.ind.BollingerBands(period=self.p.period_boll)
+        self.upper = self.boll.top
+        self.lower = self.boll.bot
+
+    def next(self):
+        score = 0
+
+        # ===== EMA评分 =====
+        if self.ema5[0] > self.ema20[0] > self.ema60[0]:
+            score += 2
+        elif self.ema5[0] > self.ema20[0]:
+            score += 1
+        elif self.ema5[0] < self.ema20[0] < self.ema60[0]:
+            score -= 2
+        elif self.ema5[0] < self.ema20[0]:
+            score -= 1
+
+        # ===== MACD评分 =====
+        if self.macd_cross[0] > 0:
+            score += 2  # 金叉
+        elif self.macd_cross[0] < 0:
+            score -= 2  # 死叉
+
+        # ===== KDJ评分 =====
+        if self.kdj_cross[0] > 0:
+            score += 1
+        elif self.kdj_cross[0] < 0:
+            score -= 1
+
+        # ===== ADX评分 =====
+        if self.adx[0] > 25:
+            if self.diplus[0] > self.diminus[0]:
+                score += 1
+            else:
+                score -= 1
+
+        # ===== Momentum =====
+        if self.momentum[0] > 0:
+            score += 1
+        elif self.momentum[0] < 0:
+            score -= 1
+
+        # ===== RSI =====
+        if self.rsi[0] > 70:
+            score -= 1
+        elif self.rsi[0] < 30:
+            score += 1
+
+        # ===== Bollinger Bands =====
+        close = self.data.close[0]
+        if close > self.upper[0]:
+            score -= 1
+        elif close < self.lower[0]:
+            score += 1
+
+        # 输出
+        self.lines.score[0] = score
+
+        # 分类趋势
+        if score >= 6:
+            self.lines.trend[0] = 2     # strong_up
+        elif score >= 3:
+            self.lines.trend[0] = 1     # weak_up
+        elif score > -2:
+            self.lines.trend[0] = 0     # consolidation
+        elif score > -5:
+            self.lines.trend[0] = -1    # weak_down
+        else:
+            self.lines.trend[0] = -2    # strong_down
+
+class ScoredTaStrategy(bt.Strategy):
+    """
+    使用评分系统的 TaStrategy 策略，改进了趋势判断算法、增强了指标可靠性并优化了加减仓逻辑
+    """
+    params = dict(
+        initial_amount=1000.0,  # 初始建仓金额（元）
+        daily_amount=200.0,  # 每日基准投金额（元）
+        add_on_pullback_ratio=1.5,  # 上升趋势回踩追加比例
+        sell_fraction_on_high=0.10,  # 高位卖出仓位比例
+        reduce_step=0.10,  # 下跌趋势每次减仓比例
+        bottom_ratio=0.10,  # 保留历史最大持仓比例
+        sell_on_high_pct=0.05,  # 高位卖出触发阈值
+        osc_band_tol=0.02,  # 均线"纠缠"容差
+        min_cash_buffer=0.0,  # 保留最小现金缓冲
+        function='suggestion',  # 'trend' 用于回测，'suggestion' 用于生成建议
+        full_log=False,
+    )
+
+    def __init__(self):
+        # 趋势评分
+        self.score = TrendScore()
+
+        # 基础数据
+        self.close = self.datas[0].close
+        self.low = self.datas[0].low
+        self.high = self.datas[0].high
+        self.open = self.datas[0].open
+        self.volume = self.datas[0].volume
+        self.vol_ratio = 0.0
+
+        # EMA系统增强趋势判断
+        self.ema20 = bt.indicators.EMA(self.data.close, period=21)
+
+        # 布林带
+        self.boll = bt.ind.BollingerBands(self.datas[0], period=20)
+
+        # 动量指标
+        self.momentum = bt.indicators.Momentum(self.data.close, period=10)
+
+        # RSI
+        self.rsi = bt.indicators.RSI(self.data.close, period=14)
+
+        # 成交量相关指标
+        self.vol_sma = bt.indicators.SMA(self.data.volume, period=20)  # 成交量20日均线
+
+        self.signal = None
+        self.indicators = None
+
+        # 持仓管理
+        self.hold_shares = 0.0
+        self.hold_cost = 0.0
+        self.realized_pnl = 0.0
+        self.max_hold_shares = 0.0
+
+        # 订单跟踪
+        self.order = None
+
+        # 状态跟踪
+        self.start_nav = None
+        self.start_value = None
+        self.consecutive_up_days = 0  # 连续上涨天数
+        self.consecutive_down_days = 0  # 连续下跌天数
+
+    def log(self, txt):
+        if self.p.function == 'trend' and self.p.full_log and len(self) > 250:
+            print(txt)
+
+    def _is_volume_breakout(self):
+        """
+        判断是否有放量突破
+        """
+        # 成交量是近期平均的2倍以上
+        high_volume = self.vol_ratio > 2.0
+
+        # 同时价格上涨
+        price_increase = self.close[0] > self.close[-1]
+
+        return high_volume and price_increase
+
+    def _is_volume_shrink(self):
+        """
+        判断是否缩量
+        """
+        # 成交量低于平均值的50%
+        low_volume = 0.0 < self.vol_ratio < 0.5
+        return low_volume
+
+    def _is_bullish_volume_divergence(self):
+        """
+        判断是否存在看涨的量价背离
+        价格创新低但成交量放大
+        """
+        # 价格创近期新低
+        recent_low_price = min([self.close[-i] for i in range(1, 6)])
+        price_new_low = self.close[0] < recent_low_price
+
+        # 但成交量放大
+        volume_increase = self.vol_ratio > 1.5
+
+        return price_new_low and volume_increase
+
+    def _is_bearish_volume_divergence(self):
+        """
+        判断是否存在看跌的量价背离
+        价格创新高但成交量萎缩
+        """
+        # 价格创近期新高
+        recent_high_price = max([self.close[-i] for i in range(1, 6)])
+        price_new_high = self.close[0] > recent_high_price
+
+        # 但成交量萎缩
+        volume_shrink = 0.0 < self.vol_ratio < 0.7
+
+        return price_new_high and volume_shrink
+
+    def _is_good_entry_point(self):
+        """
+            判断是否为良好的建仓时机
+            """
+        up_score = self.score.score[0] > 0
+
+        # 条件4: 成交量放大（有资金流入迹象）
+        volume_support = self.vol_ratio > 1.0
+
+        # 综合判断
+        return up_score and volume_support
+
+    def _calculate_position_size(self, target_exposure_ratio=0.1):
+        """
+        根据账户总价值计算目标仓位大小
+        """
+        total_value = self.broker.getvalue()
+        target_value = total_value * target_exposure_ratio
+        current_position_value = self.hold_shares * self.close[0]
+        value_to_add = target_value - current_position_value
+
+        if value_to_add > 0:
+            available_cash = self._cash_available()
+            actual_value_to_add = min(value_to_add, available_cash)
+            return actual_value_to_add / self.close[0]
+        else:
+            # 需要减仓
+            shares_to_sell = abs(value_to_add) / self.close[0]
+            return -shares_to_sell
+
+    def _cash_available(self):
+        return self.broker.getcash() - self.p.min_cash_buffer
+
+    def notify_order(self, order):
+        if order.status in [order.Submitted, order.Accepted]:
+            return
+
+        dt = self.datas[0].datetime.date(0)
+        if order.status == order.Completed:
+            ex_size = order.executed.size
+            ex_price = order.executed.price
+
+            avg_cost = (self.hold_cost / self.hold_shares) if self.hold_shares > 0 else 0.0
+
+            self.hold_shares += ex_size
+            self.hold_cost += ex_size * ex_price
+
+            realized = 0.0
+            if ex_size < 0:
+                realized = -ex_size * (ex_price - avg_cost)
+                self.realized_pnl += realized
+
+            if self.hold_shares < 1e-12:
+                self.hold_shares = 0.0
+                self.hold_cost = 0.0
+
+            # 更新历史最高持仓
+            if self.hold_shares > self.max_hold_shares:
+                self.max_hold_shares = self.hold_shares
+
+            self.log(f"{dt} {'BUY' if ex_size > 0 else 'SELL'} 成交: qty={ex_size:.4f} @ {ex_price:.4f} "
+                     f"| realized={realized:.2f}, hold_shares={self.hold_shares:.4f}, hold_cost={self.hold_cost:.2f}")
+
+        elif order.status in [order.Canceled, order.Margin, order.Rejected]:
+            self.log(f"Order {order.Status[order.status]}")
+
+        self.order = None
+
+    def next(self):
+        nav = float(self.close[0])
+        date = self.datas[0].datetime.date(0)
+        vol = self.data.volume[0]
+        sma = self.vol_sma[0]
+        self.vol_ratio = vol / sma if sma > 0 else 0.0
+        self.signal = '无'
+        trend_score = self.score.score[0]
+        trend = self.score.trend[0]
+
+        # 初始建仓
+        if self.start_nav is None and self.p.function == 'trend':
+            # 如果满足建仓条件或者策略运行了一段时间仍未能建仓
+            if self._is_good_entry_point() or len(self) > 5:
+                amt = min(self.p.initial_amount, self._cash_available())
+                if amt > 0:
+                    size = amt / nav
+                    self.order = self.buy(size=size)
+                self.start_nav = nav
+                self.start_value = self.broker.getvalue()
+                self.log(f"{date} 开始建仓：NAV={nav:.4f}, 投资 {amt:.2f}")
+                return
+            else:
+                self.log(f"{date} 等待合适建仓时机：NAV={nav:.4f}")
+                return
+
+        # 更新连续涨跌天数
+        if self.close[0] > self.close[-1]:
+            self.consecutive_up_days += 1
+            self.consecutive_down_days = 0
+        elif self.close[0] < self.close[-1]:
+            self.consecutive_down_days += 1
+            self.consecutive_up_days = 0
+        else:
+            self.consecutive_up_days = 0
+            self.consecutive_down_days = 0
+
+        # 计算日内涨幅
+        prev_close = float(self.close[-1]) if len(self.data) > 1 else nav
+
+        pos = self.getposition()
+        cash_avail = self._cash_available()
+
+        # 成交量相关判断
+        volume_breakout = self._is_volume_breakout()
+        volume_shrink = self._is_volume_shrink()
+        bullish_divergence = self._is_bullish_volume_divergence()
+        bearish_divergence = self._is_bearish_volume_divergence()
+
+        # ========== 策略主逻辑 ==========
+
+        # 1. 强势上升趋势 - 积极加仓
+        if  trend == 2:
+            add_ratio = 2  # 1.0-2.0倍基础金额
+
+            # 如果伴随放量突破，进一步增加仓位
+            if volume_breakout:
+                add_ratio *= 1.2
+
+            amt = min(self.p.daily_amount * add_ratio, cash_avail)
+            if amt > 0 and self.p.function == 'trend':
+                size = amt / nav
+                self.buy(size=size)
+                self.log(f"{date} 强势上升趋势，积极加仓 {amt:.2f} -> {size:.4f} 份 @ {nav:.4f}")
+            elif self.p.function == 'suggestion':
+                self.signal = f"强势上升趋势，建议积极加仓 {amt:.2f}"
+
+        # 3. 弱势上升趋势 - 稳健加仓
+        elif trend == 1:
+            # 如果出现看涨背离，增加信心
+            multiplier = 1.5 if bullish_divergence else 1.0
+            amt = min(self.p.daily_amount * multiplier, cash_avail)
+            if amt > 0 and self.p.function == 'trend':
+                size = amt / nav
+                self.buy(size=size)
+                self.log(f"{date} 弱势上升趋势，稳健加仓 {amt:.2f} -> {size:.4f} 份 @ {nav:.4f}")
+            elif self.p.function == 'suggestion':
+                self.signal = f"弱势上升趋势，建议稳健加仓 {amt:.2f}"
+
+        elif trend == 0:
+            # 盘整市场采用网格交易或区间交易
+            bb_top = self.boll.lines.top[0]
+            bb_bot = self.boll.lines.bot[0]
+
+            # 低位买入
+            if nav <= bb_bot * 1.02:
+                # 如果出现看涨背离，增加买入力度
+                amt_multiplier = 1.5 if bullish_divergence else 1.0
+                amt = min(self.p.daily_amount * amt_multiplier, cash_avail)  # 减少投入
+                if amt > 0 and self.p.function == 'trend':
+                    size = amt / nav
+                    self.buy(size=size)
+                    self.log(f"{date} 震荡市低位吸纳 {amt:.2f} -> {size:.4f} 份 @ {nav:.4f}")
+                elif self.p.function == 'suggestion':
+                    self.signal = f"震荡市，建议低位吸纳 {amt:.2f}"
+
+            # 高位卖出
+            elif nav >= bb_top * 0.98:
+                # 如果出现看跌背离或放量滞涨，增加卖出力度
+                sell_multiplier = 1.5 if (bearish_divergence or volume_shrink) else 1.0
+                if pos.size > 0 and self.p.function == 'trend':
+                    size_to_sell = pos.size * self.p.sell_fraction_on_high * sell_multiplier
+                    if size_to_sell > 0:
+                        self.sell(size=size_to_sell)
+                        self.log(f"{date} 震荡市高位减持 {size_to_sell:.4f} 份 @ {nav:.4f}")
+                elif self.p.function == 'suggestion':
+                    self.signal = f"震荡市，建议高位减持 {self.p.sell_fraction_on_high:.2%} 仓位"
+
+        # 6. 强势下降趋势 - 快速减仓
+        elif trend == -2:
+            # 超买时增加减仓
+            min_allowed = self.max_hold_shares * self.p.bottom_ratio
+            can_reduce = max(0.0, pos.size - min_allowed)
+            reduce_step = self.p.reduce_step * 2
+            # 如果出现放量下跌，进一步增加减仓力度
+            if volume_breakout:
+                reduce_step *= 1.5
+            reduce_ratio = min(1.0, reduce_step)
+            size_to_sell = min(pos.size * reduce_ratio, can_reduce)
+            if pos.size > 0 and self.p.function == 'trend' and can_reduce > 0:
+                if size_to_sell > 0:
+                    self.sell(size=size_to_sell)
+                    self.log(
+                        f"{date} 强势下降趋势，快速减仓 {size_to_sell:.4f} 份 @ {nav:.4f} (保留底仓 {min_allowed:.4f})")
+            elif self.p.function == 'suggestion':
+                self.signal = f"强势下降趋势，建议快速减仓 {self.p.reduce_step * 3:.2%} 仓位"
+
+        # 7. 弱势下降趋势 - 缓慢减仓
+        elif trend == -1:
+            # 如果出现看涨背离，减缓减仓速度
+            reduce_multiplier = 0.5 if bullish_divergence else 1.0
+            if pos.size > 0 and self.p.function == 'trend':
+                min_allowed = self.max_hold_shares * self.p.bottom_ratio
+                can_reduce = max(0.0, pos.size - min_allowed)
+                if can_reduce > 0:
+                    size_to_sell = min(pos.size * self.p.reduce_step * reduce_multiplier, can_reduce)
+                    if size_to_sell > 0:
+                        self.sell(size=size_to_sell)
+                        self.log(
+                            f"{date} 弱势下降趋势，缓慢减仓 {size_to_sell:.4f} 份 @ {nav:.4f} (保留底仓 {min_allowed:.4f})")
+            elif self.p.function == 'suggestion':
+                self.signal = f"弱势下降趋势，建议缓慢减仓 {self.p.reduce_step:.2%} 仓位"
+
+    def stop(self):
+        nav = float(self.close[0])
+        hold_value = self.hold_shares * nav
+        unrealized = hold_value - self.hold_cost
+        total_realized = self.realized_pnl
+        trend = self.score.trend[0]
+
+        if self.hold_cost > 0:
+            hold_roi = (hold_value - self.hold_cost) / self.hold_cost
+        else:
+            hold_roi = None
+
+        if self.p.function != 'suggestion':
+            self.log("\n=== 回测结果 ===")
+            self.log(f"最终日期: {self.datas[0].datetime.date(0)}")
+            self.log(f"持仓份额: {self.hold_shares:.4f}")
+            self.log(f"持仓成本(total): {self.hold_cost:.2f}")
+            self.log(f"持仓市值: {hold_value:.2f}")
+            self.log(f"未实现 PnL: {unrealized:.2f}")
+            self.log(f"已实现 PnL: {total_realized:.2f}")
+            if hold_roi is not None:
+                self.log(f"仅仓位收益率 (hold ROI): {hold_roi:.2%}")
+            else:
+                self.log("仅仓位收益率 (hold ROI): N/A (无持仓成本)")
+            self.log(f"总资金 (broker): {self.broker.getvalue():.2f}")
+            self.log("================\n")
+
+        if not self.p.full_log and 'trend' in self.p.function:
+            print(f"持仓市值: {hold_value:.2f}")
+            if hold_roi is not None:
+                print(f"仅仓位收益率 (hold ROI): {hold_roi:.2%}")
+            print(f"总资金 (broker): {self.broker.getvalue():.2f}")
+
+        if trend == 2:
+            trend_name = '强势上升；'
+        if trend == 1:
+            trend_name = '弱势上升；'
+        if trend == 0:
+            trend_name = '盘整；'
+        if trend == -1:
+            trend_name = '强势下降；'
+        if trend == -2:
+            trend_name = '弱势下降；'
+
+        trend = f'无' if trend_name == '' else f'{trend_name[:-1]}'
+
+        if self._is_volume_breakout():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 放量'
+        elif self._is_volume_shrink():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 缩量'
+        elif self._is_bullish_volume_divergence():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 看涨量价背离'
+        elif self._is_bearish_volume_divergence():
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 看跌量价背离'
+        else:
+            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 正常'
+
+    def get_signal(self):
+        return self.signal
+
 def ceboro_suggestion(df, strategy, forecast_nav, forecast_change, indicators=False):
     # 构建 backtrader 数据源
     data = bt.feeds.PandasData(dataname=df)
@@ -1410,13 +1956,13 @@ def ceboro_suggestion(df, strategy, forecast_nav, forecast_change, indicators=Fa
         print(f"⚠️ 获取今日操作建议时出错: {e}")
         return '错误'
 
-def ceboro_trend(df, strategy, use_plot, cash):
+def ceboro_trend(df, strategy, use_plot, cash, full_log= False):
     data = bt.feeds.PandasData(dataname=df)
 
     try:
         cerebro = bt.Cerebro()
         cerebro.adddata(data)
-        cerebro.addstrategy(strategy, function="trend", full_log=False)
+        cerebro.addstrategy(strategy, function="trend", full_log=full_log)
         cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name='sharpe', timeframe=bt.TimeFrame.Days,
                             annualize=True,
                             riskfreerate=0.02)
