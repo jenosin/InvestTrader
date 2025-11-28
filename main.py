@@ -35,7 +35,7 @@ def backtest_funds(file_path, sheet_name, cash):
             print(f"⚠️ 获取 {code} 基金信息失败: {e}")
 
         df = get_fund_history_ef(code, 1000, volume_source)
-        ceboro_trend(df, trader.OptimizedTaStrategy, False, cash)
+        ceboro_trend(df, trader.NewTrendTaStrategy, False, cash)
 
         print('-----------------------------------------')
 
@@ -85,7 +85,7 @@ def suggest_funds(file_path, sheet_name, indicators):
 
         df = get_fund_history_ef(code, 100, volume_source)
         df, forecast_nav = combine_today_info(df, estimate/100)
-        action = ceboro_suggestion(df, trader.OptimizedTaStrategy, forecast_nav, estimate / 100, indicators)
+        action = ceboro_suggestion(df, trader.NewTrendTaStrategy, forecast_nav, estimate / 100, indicators)
         ws.cell(row=index + 3, column=8, value=action)
 
         print('-----------------------------------------')
