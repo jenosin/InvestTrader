@@ -127,7 +127,7 @@ if __name__ == "__main__":
 
         file_path = "FundEstimate.xlsx"
         sheet_name = "基金操作"
-        cash = 5000
+        cash = 10000
 
         if use == 'backtest_fund':
             fund_code = input("请输入基金代码：")
@@ -138,7 +138,7 @@ if __name__ == "__main__":
             if df is None or not len(df):
                 print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
                 sys.exit()
-            ceboro_trend(df, trader.OptimizedTaStrategy, full_log == 'Y', cash, full_log == 'Y')
+            ceboro_trend(df, trader.NewTrendTaStrategy, full_log == 'Y', cash, full_log == 'Y')
 
         elif use == 'backtest_funds':
             file_path = "FundEstimate.xlsx"
@@ -169,7 +169,7 @@ if __name__ == "__main__":
                 print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
                 sys.exit()
             df, forecast_nav = combine_today_info(df, estimate)
-            ceboro_suggestion(df, trader.OptimizedTaStrategy, forecast_nav, estimate / 100, True)
+            ceboro_suggestion(df, trader.NewTrendTaStrategy, forecast_nav, estimate / 100, True)
 
         elif use == 'suggest_index':
             index_code = input("⌨️ 请输入指数代码：")
