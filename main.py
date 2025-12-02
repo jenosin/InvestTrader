@@ -138,7 +138,7 @@ if __name__ == "__main__":
             if df is None or not len(df):
                 print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
                 sys.exit()
-            ceboro_trend(df, trader.OptimizedTaStrategy, full_log == 'Y', cash, full_log == 'Y')
+            ceboro_trend(df, trader.NewTrendTaStrategy, full_log == 'Y', cash, full_log == 'Y')
 
         elif use == 'backtest_funds':
             file_path = "FundEstimate.xlsx"

@@ -1,5 +1,7 @@
 import backtrader as bt
 import numpy as np
+from fontTools.varLib.featureVars import overlayBox
+
 
 class DynamicAddReduceStrategy(bt.Strategy):
     """
@@ -1983,8 +1985,8 @@ class NewTrendTaStrategy(bt.Strategy):
         self.open = self.datas[0].open
         self.volume = self.datas[0].volume
         self.vol_ratio = 0.0
-        self.trend_now = None
-        self.trend_prev = None
+        self.trend_now = ''
+        self.trend_prev = ''
 
         # 多周期均线系统
         self.ma_short = bt.ind.SMA(self.datas[0], period=5)
@@ -1998,6 +2000,8 @@ class NewTrendTaStrategy(bt.Strategy):
 
         # 布林带
         self.bbands = bt.ind.BollingerBands(self.datas[0], period=20)
+        self.bb_top = self.bbands.lines.top
+        self.bb_bot = self.bbands.lines.bot
 
         # MACD
         self.macd = bt.indicators.MACD(self.data.close, period_me1=12, period_me2=26, period_signal=9)
@@ -2316,6 +2320,36 @@ class NewTrendTaStrategy(bt.Strategy):
 
         return 'UT'
 
+    def _breakout_coming(self):
+
+        # 1. 布林带张口
+        bb_width_now = self.bb_top[0] - self.bb_bot[0]
+        bb_width_prev = self.bb_top[-5] - self.bb_bot[-5] if len(self) > 5 else 0
+        bb_opening = bb_width_now > bb_width_prev * 1.15
+
+        # 2. ATR 波动率上升
+        atr_rising = self.atr[0] > self.atr[-3] * 1.10 if len(self) > 3 else False
+
+        # 3. ADX 趋势力量上升
+        adx_rising = self.adx[0] > self.adx[-3] + 2 if len(self) > 3 else False
+
+        # 4. 价格突破短均线并形成多空序列
+        ma5 = self.ma_short[0]
+        ma10 = self.ma_mid[0]
+        price_break_ma = (
+                (self.data.close[0] > ma5 > ma10) or
+                (self.data.close[0] < ma5 < ma10)
+        )
+
+        # 5. 放量 (趋势启动常伴随)
+        vol_rising = self.data.volume[0] > self.vol_sma[0] * 1.3
+
+        # 满足以上五个信号中的两个 → 趋势可能要来了
+        signals = [bb_opening, atr_rising, adx_rising, price_break_ma, vol_rising]
+        count = sum(signals)
+
+        return count >= 2
+
     def _trend_change(self, prev_trend, curr_trend):
         """
         根据趋势状态变化返回操作信号：
@@ -2342,10 +2376,10 @@ class NewTrendTaStrategy(bt.Strategy):
                 return 0.5, "趋势保持强升，轻加仓"  # 强升维持 → 轻加仓
             elif curr_trend == "SD":
                 return -2, "趋势保持强跌，大幅减仓"  # 强跌维持 → 大幅减仓
-            elif curr_trend == "CO":
-                return 0, "震荡保持"
-            else:
-                return 0, "无操作"
+            # elif curr_trend == "CO":
+            #     return 0, "震荡保持"
+            # else:
+            #     return 0, "无操作"
 
         # ======================================================
         # 以下为趋势发生变化的情况
@@ -2394,7 +2428,27 @@ class NewTrendTaStrategy(bt.Strategy):
         # ===== 特殊：上下反复的震荡系反转 =====
         if (prev_trend == "WU" and curr_trend == "WD") or \
                 (prev_trend == "WD" and curr_trend == "WU"):
-            return 0, "无操作"
+            return 0, "上下反复，继续观望"
+
+        break_out_coming = self._breakout_coming()
+        if curr_trend == 'CO' and not break_out_coming:
+            nav = float(self.close[0])
+            oversold = self._is_oversold()
+            overbought = self._is_overbought()
+            bb_slope = self.bb_top[0] - self.bb_top[-3] if len(self) > 3 else 0
+            flat_band = abs(bb_slope) < 0.2 * self.atr[0]
+            not_volume_dump = self.data.volume[0] <= self.vol_sma[0] * 1.2
+            not_volume_breakout = self.data.volume[0] <= self.vol_sma[0] * 1.3
+            low_buy = (nav <= self.bb_bot[0] or oversold) and flat_band and not_volume_dump
+            high_sell = (nav >= self.bb_top[0] or overbought) and flat_band and not_volume_breakout
+            if low_buy:
+                return 1, "震荡市，低位吸纳"
+            elif high_sell:
+                return -1, "震荡市，高位减持"
+            else:
+                return 0, f"震荡市，未发现操作点"
+        elif curr_trend == 'CO':
+            return 0, "震荡市突破中，等待确认"
 
         # 默认无操作
         return 0, "无操作"
@@ -2437,18 +2491,17 @@ class NewTrendTaStrategy(bt.Strategy):
     def next(self):
         nav = float(self.close[0])
         date = self.datas[0].datetime.date(0)
-        vol = self.data.volume[0]
-        sma = self.vol_sma[0]
-        self.vol_ratio = vol / sma if sma > 0 else 0.0
         self.signal = '无'
         entry_score = self._is_good_entry_point()
+        pos = self.getposition()
+        cash_avail = self._cash_available()
 
         # 初始建仓
         entry_amt = self.p.initial_amount * entry_score
         if self.start_nav is None and self.p.function == 'trend':
             # 如果满足建仓条件或者策略运行了一段时间仍未能建仓
             if entry_score > 0 or len(self) > 5:
-                amt = min(entry_amt, self._cash_available())
+                amt = min(entry_amt, cash_avail)
                 if amt > 0:
                     size = amt / nav
                     self.order = self.buy(size=size)
@@ -2462,35 +2515,10 @@ class NewTrendTaStrategy(bt.Strategy):
         elif self.p.function == 'suggestion' and entry_score > 0:
             self.signal = f'建议建仓：{entry_amt:.2f}'
 
-        # 更新连续涨跌天数
-        if self.close[0] > self.close[-1]:
-            self.consecutive_up_days += 1
-            self.consecutive_down_days = 0
-        elif self.close[0] < self.close[-1]:
-            self.consecutive_down_days += 1
-            self.consecutive_up_days = 0
-        else:
-            self.consecutive_up_days = 0
-            self.consecutive_down_days = 0
-
-        # 计算日内涨幅
-        prev_close = float(self.close[-1]) if len(self.data) > 1 else nav
-
-        pos = self.getposition()
-        cash_avail = self._cash_available()
-
-        # 获取各指标值
-        bb_top = self.bbands.lines.top[0]
-        bb_bot = self.bbands.lines.bot[0]
-
-        # 趋势判断
-        self.trend_now = self._get_trend()
-        overbought = self._is_overbought()
-        oversold = self._is_oversold()
-
         # 判断趋势变化
         trend_ratio = 0
         signal = '无操作'
+        self.trend_now = self._get_trend()
         if self.trend_prev:
             trend_ratio, signal = self._trend_change(self.trend_prev, self.trend_now)
         self.trend_prev = self.trend_now
@@ -2522,40 +2550,24 @@ class NewTrendTaStrategy(bt.Strategy):
                 self.signal = f"{signal} {reduce_step:.2%} 仓位"
 
         # 5. 震荡市 - 高抛低吸
-        elif self.trend_now == 'CO':
-            # 低位买入
-            if nav <= bb_bot or oversold:
-                amt = min(self.p.daily_amount, cash_avail)  # 减少投入
-                if amt > 0 and self.p.function == 'trend':
-                    size = amt / nav
-                    self.buy(size=size)
-                    self.log(f"{date} 震荡市低位吸纳 {amt:.2f} -> {size:.4f} 份 @ {nav:.4f}")
-                elif self.p.function == 'suggestion':
-                    self.signal = f"震荡市，建议低位吸纳 {amt:.2f}"
-
-            # 高位卖出
-            elif nav >= bb_top or overbought:
-                # 如果出现看跌背离或放量滞涨，增加卖出力度
-                reduce_step = self.p.reduce_step
-                if pos.size > 0 and self.p.function == 'trend':
-                    size_to_sell = pos.size * reduce_step
-                    if size_to_sell > 0:
-                        self.sell(size=size_to_sell)
-                        self.log(f"{date} 震荡市高位减持 {size_to_sell:.4f} 份 @ {nav:.4f}")
-                elif self.p.function == 'suggestion':
-                    self.signal = f"震荡市，建议高位减持 {reduce_step:.2%} 仓位"
-
+        elif self.trend_now == 'CO' and entry_score > 0:
             # 建仓条件：在震荡市中出现好的买入点
-            elif entry_score > 0:
-                amt = min(entry_amt, self._cash_available())
-                if self.start_nav is None and amt > 0 and self.p.function == 'trend':
-                    size = amt / nav
-                    self.buy(size=size)
-                    self.start_nav = nav
-                    self.start_value = self.broker.getvalue()
-                    self.log(f"{date} 震荡市中发现建仓机会，投资 {amt:.2f}")
-                elif self.p.function == 'suggestion':
-                    self.signal = f"震荡市，发现建仓机会，建议投资 {entry_amt:.2f}"
+            amt = min(entry_amt, self._cash_available())
+            if self.start_nav is None and amt > 0 and self.p.function == 'trend':
+                size = amt / nav
+                self.buy(size=size)
+                self.start_nav = nav
+                self.start_value = self.broker.getvalue()
+                self.log(f"{date} 震荡市中发现建仓机会，投资 {amt:.2f}")
+            elif self.p.function == 'suggestion':
+                self.signal = f"震荡市，发现建仓机会，建议投资 {entry_amt:.2f}"
+
+        else:
+            if self.p.function == 'trend':
+                self.log(f"{date} {signal}")
+            elif self.p.function == 'suggestion':
+                self.signal = f"{signal}"
+
 
     def stop(self):
         nav = float(self.close[0])
@@ -2589,6 +2601,9 @@ class NewTrendTaStrategy(bt.Strategy):
                 print(f"仅仓位收益率 (hold ROI): {hold_roi:.2%}")
             print(f"总资金 (broker): {self.broker.getvalue():.2f}")
 
+        vol = self.data.volume[0]
+        sma = self.vol_sma[0]
+        self.vol_ratio = vol / sma if sma > 0 else 0.0
         ma = f'MA5={self.ma_short[0]:.4f}, MA10={self.ma_mid[0]:.4f}, MA20={self.ma_long[0]:.4f}'
         price = f'CLOSE={self.close[0]:.4f}'
         adx = f'ADX={self.adx[0]:.4f}'
@@ -2608,19 +2623,20 @@ class NewTrendTaStrategy(bt.Strategy):
         else:
             over = f'{rsi}，{kdj}，{bb}，状态: 正常'
 
+
+        vol = f'VOL={self.data.volume[0]}，VMA={self.vol_sma[0]}'
         if self._is_volume_breakout():
-            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 放量'
+            volume = f'{vol} 成交量比例：{self.vol_ratio:.2%}，状态: 放量'
         elif self._is_volume_shrink():
-            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 缩量'
+            volume = f'{vol} 成交量比例：{self.vol_ratio:.2%}，状态: 缩量'
         elif self._is_bullish_volume_divergence():
-            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 看涨量价背离'
+            volume = f'{vol} 成交量比例：{self.vol_ratio:.2%}，状态: 看涨量价背离'
         elif self._is_bearish_volume_divergence():
-            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 看跌量价背离'
+            volume = f'{vol} 成交量比例：{self.vol_ratio:.2%}，状态: 看跌量价背离'
         else:
-            volume = f'成交量比例：{self.vol_ratio:.2%}，状态: 正常'
+            volume = f'{vol} 成交量比例：{self.vol_ratio:.2%}，状态: 正常'
 
         self.indicators = f'{trend}\n{over}\n{volume}'
-
 
     def get_signal(self):
         return self.signal
@@ -2681,14 +2697,18 @@ def ceboro_trend(df, strategy, use_plot, cash, full_log= False):
 def combine_today_info(df, forecast_change):
     """输入df和预估涨跌幅（如0.005代表+0.5%），返回今日操作建议"""
     df_bt = df
-    df_bt["volume"] = 0
+    volume = 0
+    if df["volume"].isnull().all():
+        df_bt["volume"] = 0
+    else:
+        volume = df["volume"].iloc[-1]
     df_bt["openinterest"] = 0
 
     last_nav = df['close'].iloc[-1]
     forecast_nav = last_nav * (1 + forecast_change)
     forecast_date = df_bt.index[-1] + pd.Timedelta(days=1)
 
-    new_row = pd.DataFrame({'close': [forecast_nav], 'open': [forecast_nav], 'high': [forecast_nav], 'low': [forecast_nav]}, index=[forecast_date])
+    new_row = pd.DataFrame({'close': [forecast_nav], 'open': [forecast_nav], 'high': [forecast_nav], 'low': [forecast_nav], "volume": [volume]}, index=[forecast_date])
     df_today = pd.concat([df, new_row])
 
     return df_today, forecast_nav
