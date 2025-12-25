@@ -125,6 +125,8 @@ def get_stock_history_ef(stock_code: str, beg):
     stock_df = ef.stock.get_quote_history(stock_code, beg=beg)
     stock_df = stock_df.sort_values('日期').reset_index(drop=True)
     stock_df.rename(columns={'日期':'date', '收盘': 'close', '开盘': 'open', '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+    stock_df['date'] = pd.to_datetime(stock_df['date'])
+    stock_df.set_index("date", inplace=True)
 
     return stock_df
 

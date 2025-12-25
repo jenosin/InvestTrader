@@ -1,7 +1,7 @@
 import sys
 import trader
 import pandas as pd
-from utils_efinance import get_fund_history_ef, get_realtime_rate
+from utils_efinance import get_fund_history_ef, get_realtime_rate, get_stock_history_ef
 import efinance as ef
 from openpyxl import load_workbook
 from trader import ceboro_trend, combine_today_info, ceboro_suggestion
@@ -83,7 +83,7 @@ def suggest_funds(file_path, sheet_name, indicators):
         estimate = fund_rate or 0.0
         ws.cell(row=index + 3, column=5, value=f'{estimate/100:.2%}')
 
-        df = get_fund_history_ef(code, 100, volume_source)
+        df = get_fund_history_ef(code, 200, volume_source)
         df, forecast_nav = combine_today_info(df, estimate/100)
         action = ceboro_suggestion(df, trader.NewTrendTaStrategy, forecast_nav, estimate / 100, indicators)
         ws.cell(row=index + 3, column=8, value=action)
@@ -106,35 +106,55 @@ def suggest_index(index_code):
     df, price, estimate = get_usa_stock_yf(index_code, 'current')
     ceboro_suggestion(df, trader.OptimizedTaStrategy, price, estimate, True)
 
+def ask_int(prompt, min_val=None, max_val=None):
+    while True:
+        try:
+            value = int(input(prompt))
+            if min_val is not None and value < min_val:
+                print(f"❌ 输入不能小于 {min_val}")
+                continue
+            if max_val is not None and value > max_val:
+                print(f"❌ 输入不能大于 {max_val}")
+                continue
+            return value
+        except ValueError:
+            print("❌ 请输入一个整数")
+
+
 # ----------------- 获取历史数据和当日预估，获得操作建议 -----------------
 if __name__ == "__main__":
+    start = True
 
-    while True:
+    while start:
         # use = 'funds' | 'stock' | 'backtest_fund' | 'backtest_index' | 'index'
-        use_input = input("""请选择使用功能：
-        1. 获取<单个基金>历史数据并回测
-        2. 获取<所有基金>历史数据并回测
-        3. 获取<单个基金>历史数据并获取操作建议
-        4. 获取<所有基金>历史数据并获取操作建议
-        5. 获取<指数>历史数据并回测
-        6. 获取<指数>历史数据并获取操作建议
-        7. 退出程序
+        use_prompt = """
+    请选择使用功能：
+    1. 获取<单个基金>历史数据并回测
+    2. 获取<所有基金>历史数据并回测
+    3. 获取<单个基金>历史数据并获取操作建议
+    4. 获取<所有基金>历史数据并获取操作建议
+    5. 获取<指数>历史数据并回测
+    6. 获取<指数>历史数据并获取操作建议
+    7. 获取<股票>历史数据并回测
+    8. 退出程序
         
-    🔢 输入选项数字（1-6）：""")
+    🔢 输入选项数字（1-6）："""
 
-        uses = ['backtest_fund', 'backtest_funds', 'suggest_fund', 'suggest_funds', 'backtest_index', 'suggest_index', 'exit']
-        use = uses[int(use_input) - 1]
+        use_input = ask_int(use_prompt, 1, 8)
+
+        uses = ['backtest_fund', 'backtest_funds', 'suggest_fund', 'suggest_funds', 'backtest_index', 'suggest_index', 'backtest_stock', 'exit']
+        use = uses[use_input - 1]
 
         file_path = "FundEstimate.xlsx"
         sheet_name = "基金操作"
-        cash = 10000
+        cash = 5000
 
         if use == 'backtest_fund':
             fund_code = input("请输入基金代码：")
             etf_code = input("请输入基金追踪的ETF/指数代码（可留空）：")
-            full_log = input("是否输出50条日志并绘图（Y/N）：")
+            full_log = input("是否输出100条日志并绘图（Y/N）：")
             print(f"开始回测 {fund_code} 基金")
-            df = get_fund_history_ef(fund_code, 300, etf_code)
+            df = get_fund_history_ef(fund_code, 1000, etf_code)
             if df is None or not len(df):
                 print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
                 sys.exit()
@@ -155,6 +175,16 @@ if __name__ == "__main__":
             print(f"开始回测 {index_code} 指数")
             backtest_index(index_code, cash)
 
+        elif use == 'backtest_stock':
+            stock_code = input("请输入股票代码：")
+            full_log = input("是否输出100条日志并绘图（Y/N）：")
+            print(f"开始回测 {stock_code} 股票")
+            df = get_stock_history_ef(stock_code, '20210101')
+            if df is None or not len(df):
+                print(f"⚠️ 获取 {stock_code} 基金历史数据失败")
+                sys.exit()
+            ceboro_trend(df, trader.MA20Strategy, full_log == 'Y', cash, full_log == 'Y')
+
         elif use == 'suggest_fund':
             fund_code = input("请输入基金代码：")
             try:
@@ -164,11 +194,11 @@ if __name__ == "__main__":
                 print(f"⚠️ 输入的基金预估净值有误: {e}")
                 sys.exit()
             print(f"开始获取 {fund_code} 基金操作建议")
-            df = get_fund_history_ef(fund_code, 100, etf_code)
+            df = get_fund_history_ef(fund_code, 200, etf_code)
             if df is None or not len(df):
                 print(f"⚠️ 获取 {fund_code} 基金历史数据失败")
                 sys.exit()
-            df, forecast_nav = combine_today_info(df, estimate)
+            df, forecast_nav = combine_today_info(df, estimate/100)
             ceboro_suggestion(df, trader.NewTrendTaStrategy, forecast_nav, estimate / 100, True)
 
         elif use == 'suggest_index':
